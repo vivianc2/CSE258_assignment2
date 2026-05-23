@@ -1,0 +1,18 @@
+{
+  "idx_to_chord": [
+    "N",
+    "OOV",
+    "C:maj",
+    "G:maj",
+    "A:min",
+    "F:maj"
+  ],
+  "chord_to_idx": {
+    "N": 0,
+    "OOV": 1,
+    "C:maj": 2,
+    "G:maj": 3,
+    "A:min": 4,
+    "F:maj": 5
+  }
+}

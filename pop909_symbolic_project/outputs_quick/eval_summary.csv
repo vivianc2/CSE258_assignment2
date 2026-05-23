@@ -1,0 +1,9 @@
+metric,value
+melody_unigram_baseline_ppl,8.60267845769969
+melody_lstm_val_ppl,4.630893077700658
+melody_remi_transformer_val_ppl,32.72450726934374
+chord_majority_baseline_acc,0.2428778367938194
+chord_transformer_val_acc,0.2172211350293542
+chord_transformer_val_top3_acc,0.482061317677756
+melody_note_in_pred_chord_rate,0.47283406754772395
+pred_chord_change_rate,0.5461689587426326

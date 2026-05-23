@@ -1,0 +1,11 @@
+{
+  "tag": "t1.2",
+  "n_tokens": 2825,
+  "n_notes": 930,
+  "bars": 32,
+  "temperature": 1.2,
+  "top_p": 0.92,
+  "top_k": 0,
+  "repeat_penalty": 1.15,
+  "seed": null
+}

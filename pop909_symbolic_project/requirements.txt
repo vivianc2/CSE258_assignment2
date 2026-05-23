@@ -1,0 +1,8 @@
+numpy
+pandas
+matplotlib
+mido
+torch
+tqdm
+openpyxl
+jupyter

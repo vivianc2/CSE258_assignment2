@@ -1,0 +1,74 @@
+{
+  "args": {
+    "pop909_root": "../POP909-Dataset/POP909",
+    "out_dir": "outputs_more_varied",
+    "max_songs": 200,
+    "seed": 42,
+    "device": "cuda",
+    "frame_step": 0.5,
+    "seq_len": 64,
+    "stride": 16,
+    "max_beats": 256,
+    "max_chords": 64,
+    "epochs_melody": 10,
+    "epochs_chord": 15,
+    "batch_size": 64,
+    "chord_batch_size": 16,
+    "lr": 0.001,
+    "melody_emb": 96,
+    "melody_hidden": 192,
+    "melody_layers": 2,
+    "chord_dim": 128,
+    "chord_heads": 4,
+    "chord_layers": 3,
+    "temperature": 0.9,
+    "top_k": 12,
+    "gen_melody_frames": 192,
+    "gen_chord_beats": 96,
+    "tempo": 105,
+    "decode_strategy": "guided",
+    "chord_top_k": 10,
+    "chord_beam_size": 6,
+    "chord_temperature": 1.1,
+    "decode_model_weight": 1.0,
+    "decode_fit_weight": 1.2,
+    "decode_transition_weight": 0.55,
+    "decode_repeat_penalty": 0.65,
+    "decode_phrase_change_bonus": 0.55,
+    "max_same_chord": 2
+  },
+  "n_loaded_songs": 200,
+  "n_failed": 0,
+  "failed_preview": [],
+  "chord_vocab_size": 65,
+  "outputs": {
+    "prompt_song_id": "060",
+    "raw_argmax_chords": {
+      "n_chords": 96,
+      "unique_chords": 7,
+      "change_rate": 0.5473684210526316,
+      "preview": "N N E:sus2 E:sus2 E:sus2 E:sus2 E:sus2 E:sus2 E:sus2 E:sus2 E:sus2 E:sus2 E:sus2 E:sus2 E:sus2 E:sus2 E:sus2 E:sus2 E:sus2 E:sus2 E:sus2 E:sus2 E:sus2 E:sus2 E:sus2 OOV E:maj E:maj F#:min OOV E:maj OOV"
+    },
+    "guided_chords": {
+      "n_chords": 96,
+      "unique_chords": 6,
+      "change_rate": 0.5473684210526316,
+      "preview": "E:sus2 E:sus2 E:maj E:maj E:sus2 E:sus2 E:maj E:maj E:sus2 E:sus2 E:maj E:maj E:sus2 E:sus2 E:maj E:maj F#:min F#:min E:maj E:maj F#:min F#:min E:maj E:maj F#:min F#:min E:maj A:maj B:maj B:maj E:maj E:maj"
+    }
+  },
+  "final_melody": {
+    "epoch": 10,
+    "train_loss": 1.0956594216332438,
+    "val_loss": 1.6409851763881533,
+    "val_ppl": 5.160250766069736
+  },
+  "final_chord": {
+    "epoch": 15,
+    "train_loss": 2.72145034371688,
+    "val_loss": 3.270660224549225,
+    "val_acc": 0.08801907411086828,
+    "val_top3_acc": 0.24756606397774686,
+    "melody_note_in_pred_chord_rate": 0.6496815286624203,
+    "pred_chord_change_rate": 0.22082585278276481
+  }
+}
