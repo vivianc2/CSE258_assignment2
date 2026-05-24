@@ -24,10 +24,12 @@ from pathlib import Path
 from typing import List, Optional
 import shutil
 import torch
+import mido
 
 from pop909_symbolic.constants import REST
 from pop909_symbolic.midi_io import (
     Note, list_song_dirs, load_song, write_midi_combined, write_midi_from_notes,
+    extract_notes_by_track,
 )
 from pop909_symbolic.datasets import PreparedSong, prepare_song
 from pop909_symbolic.models import MelodyTransformerLM, ChordTransformer
@@ -169,11 +171,18 @@ def args_for_decoding(d_args: dict) -> types.SimpleNamespace:
 def harmonize_transformer_melody(remi_model, chord_model, chord_to_idx, idx_to_chord,
                                  transition_logprobs, device: str, n_bars: int, tempo: int,
                                  seed: int, decode_args, top_p: float, temperature: float,
-                                 repeat_penalty: float, top_k: int):
-    """Sample a melody from the REMI Transformer, then harmonize it with the chord model."""
+                                 repeat_penalty: float, top_k: int,
+                                 simple: bool = False, grid_steps: int = 2):
+    """Sample a melody from the REMI Transformer, then harmonize it with the chord model.
+
+    If simple=True, sampling is restricted to the 8th-note grid with clean
+    durations only — the melody still has pitch & rhythmic-pattern variety but
+    no 16th-note ornaments or triplets.
+    """
     tokens = sample_remi(remi_model, n_bars=n_bars, temperature=temperature,
                         top_k=top_k, top_p=top_p, pitch_repeat_penalty=repeat_penalty,
-                        device=device, seed=seed)
+                        device=device, seed=seed,
+                        simple=simple, grid_steps=grid_steps)
     decoded = RR.decode_remi(tokens)
     if not decoded:
         return None
@@ -231,6 +240,14 @@ def main():
                          "1.0=quarter notes. Set to 0 to disable (use natural expressive timing).")
     ap.add_argument("--prompt_song", default=None,
                     help="Force a specific POP909 song id (e.g. '001') instead of auto-picking.")
+    # Simple-right-hand: generate a rhythmically simple melody, then harmonize.
+    ap.add_argument("--simple_right_hand", action="store_true", default=True,
+                    help="Additionally produce a 'simple right hand' variant: REMI sampling "
+                         "constrained to the 8th-note grid + clean durations, easier to accompany.")
+    ap.add_argument("--no_simple_right_hand", dest="simple_right_hand", action="store_false")
+    ap.add_argument("--simple_grid_steps", type=int, default=2,
+                    help="Onset grid for simple sampling, in 16th-note steps. "
+                         "2 = 8th-note grid (default), 4 = quarter-only.")
     args = ap.parse_args()
 
     out = Path(args.out_dir)
@@ -369,6 +386,47 @@ def main():
                           for n in thinned],
                          tempo=args.tempo)
 
+    # --- Save the ORIGINAL POP909 MIDI for A/B comparison ----------------
+    # 1) Raw file untouched (all tracks: MELODY, BRIDGE, PIANO; native key).
+    orig_src = prompt.midi_path
+    if orig_src.exists():
+        shutil.copyfile(orig_src, out / f"original_pop909_{prompt.song_id}.mid")
+        print(f"  {out}/original_pop909_{prompt.song_id}.mid  (raw POP909 file, all tracks, native key={prompt.key})")
+    # 2) Trimmed + key-normalized: lines up beat-for-beat with our conditioned
+    #    outputs (same key, same window, original timing preserved).
+    try:
+        all_tracks = extract_notes_by_track(orig_src)
+    except Exception as e:
+        print(f"  (skipped trimmed original: {e})")
+        all_tracks = {}
+    if all_tracks:
+        delta = int(prompt.transpose_delta)
+        mid = mido.MidiFile(ticks_per_beat=480); tpb = mid.ticks_per_beat
+        for track_name, raw_notes in all_tracks.items():
+            shifted = [Note(int(rn.pitch) + delta, rn.start, rn.end, rn.velocity)
+                       for rn in raw_notes
+                       if first_beat <= rn.start < last_beat + 2]
+            if not shifted:
+                continue
+            tr = mido.MidiTrack(); mid.tracks.append(tr)
+            tr.append(mido.MetaMessage("track_name", name=track_name, time=0))
+            tr.append(mido.MetaMessage("set_tempo", tempo=mido.bpm2tempo(args.tempo), time=0))
+            events = []
+            for n in shifted:
+                a = int(round((n.start - first_beat) * tpb))
+                b = int(round((n.end - first_beat) * tpb))
+                if b <= a: b = a + tpb // 4
+                a = max(0, a)
+                events += [(a, mido.Message("note_on", note=int(n.pitch), velocity=int(n.velocity), time=0, channel=0)),
+                           (b, mido.Message("note_off", note=int(n.pitch), velocity=0, time=0, channel=0))]
+            events.sort(key=lambda x: (x[0], 0 if x[1].type == "note_off" else 1))
+            last = 0
+            for tick, msg in events:
+                msg.time = max(0, int(tick - last)); tr.append(msg); last = tick
+        trimmed_path = out / f"original_pop909_{prompt.song_id}_window.mid"
+        mid.save(trimmed_path)
+        print(f"  {trimmed_path}  (same window we conditioned on, transposed {prompt.transpose_delta:+d} semitones to match)")
+
     # Promote the adaptive variant to the official submission file.
     shutil.copyfile(new_files["adaptive"], out / "symbolic_conditioned.mid")
     shutil.copyfile(out / "symbolic_conditioned.mid", Path("symbolic_conditioned.mid"))
@@ -415,12 +473,60 @@ def main():
                     "raw_chord_preview": " ".join(res["raw_chords"][:32])}
             (out / "self_harmonized_summary.json").write_text(json.dumps(meta, indent=2))
 
+        # --- Simple-right-hand variant -------------------------------------
+        # Same chord model, but the melody is sampled with the rhythm
+        # vocabulary restricted to the 8th-note grid + clean durations. This is
+        # the "easy to accompany" variant the user asked for: variety in pitch
+        # and rhythmic *pattern*, but no triplets/16ths/ornaments.
+        if args.simple_right_hand:
+            res_s = harmonize_transformer_melody(
+                remi_model, chord_model, chord_to_idx, idx_to_chord,
+                transition_logprobs, args.device, n_bars=args.self_harmonize_bars,
+                tempo=args.tempo, seed=args.seed + 7, decode_args=decode_ns,
+                top_p=args.remi_top_p, temperature=args.remi_temperature,
+                repeat_penalty=args.remi_repeat_penalty, top_k=args.remi_top_k,
+                simple=True, grid_steps=args.simple_grid_steps,
+            )
+            if res_s is not None:
+                # Notes are already 8th-grid aligned by construction, but quantize
+                # again at the requested grid in case the user wants quarter-only.
+                s_quantized = quantize_melody(
+                    res_s["notes"], grid_beats=args.quantize_grid,
+                    min_dur_beats=max(args.quantize_grid, 0.25),
+                )
+                # No further thinning — sampler already produced a clean rhythm.
+                s_styles = adaptive_chord_styles(
+                    s_quantized, n_beats=len(res_s["chords"]), beat_offset=0,
+                    bar_len=4, busy_threshold=args.busy_threshold,
+                    medium_threshold=args.medium_threshold,
+                )
+                p_simple = out / "self_harmonized_simple_adaptive.mid"
+                write_midi_combined(p_simple, s_quantized, res_s["chords"],
+                                   tempo=args.tempo, style=s_styles)
+                print(f"  {p_simple}  (SIMPLE generated right hand + adaptive accompaniment)")
+                for style in ("block", "ballad_light", "ballad"):
+                    p = out / f"self_harmonized_simple_{style}.mid"
+                    write_midi_combined(p, s_quantized, res_s["chords"],
+                                       tempo=args.tempo, style=style)
+                # Save melody-only for A/B.
+                write_midi_from_notes(out / "melody_simple_right_hand_only.mid",
+                                     s_quantized, tempo=args.tempo)
+                meta_s = {"n_notes": len(res_s["notes"]),
+                          "n_beats": res_s["n_beats"],
+                          "grid_steps": args.simple_grid_steps,
+                          "chord_preview": " ".join(res_s["chords"][:32])}
+                (out / "self_harmonized_simple_summary.json").write_text(
+                    json.dumps(meta_s, indent=2))
+
     print("\nDone. Listen first to:")
     print(f"  {out}/symbolic_conditioned.mid                       (Task 2 submission: thinned melody + adaptive accompaniment)")
     print(f"  {out}/symbolic_conditioned_natural_ballad_busy.mid   (the OLD version with busy melody + busy left hand)")
     print(f"  {out}/debug_raw_argmax_natural.mid                   (raw classifier chords, for the 'why guided decoder' demo)")
     if remi_model is not None and not args.no_self_harmonize:
         print(f"  {out}/self_harmonized_adaptive.mid                  (end-to-end: REMI melody + adaptive accompaniment)")
+        if args.simple_right_hand:
+            print(f"  {out}/self_harmonized_simple_adaptive.mid           (SIMPLE rhythm right hand + adaptive accompaniment)")
+            print(f"  {out}/melody_simple_right_hand_only.mid             (just the simple right hand, no chords)")
 
 
 if __name__ == "__main__":

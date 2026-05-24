@@ -245,7 +245,8 @@ def write_midi_combined(path, melody_notes: Sequence[Note], chord_labels: Sequen
     _write_events(tr_m, events)
     if chord_labels:
         tr_c = mido.MidiTrack(); mid.tracks.append(tr_c)
-        tr_c.append(mido.MetaMessage("track_name", name=f"PIANO_{style}", time=0))
+        style_name = "adaptive" if isinstance(style, (list, tuple)) else str(style)
+        tr_c.append(mido.MetaMessage("track_name", name=f"PIANO_{style_name}", time=0))
         _append_chords(tr_c, chord_labels, tpb, 1, style)
     path.parent.mkdir(parents=True, exist_ok=True); mid.save(path)
 

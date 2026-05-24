@@ -121,7 +121,26 @@ def _evaluate_remi_loss(model, loader, device, pad_id):
     return total / max(1, tok)
 
 
-def _remi_allowed_mask(prev_token: int, device) -> torch.Tensor:
+# Default "simple" duration list, in 16th-note units:
+#   2 = 8th, 3 = dotted-8th, 4 = quarter, 6 = dotted-quarter,
+#   8 = half, 12 = dotted-half, 16 = whole, 24/32 = held over the bar.
+_SIMPLE_DURATIONS = (2, 3, 4, 6, 8, 12, 16, 24, 32)
+
+
+def _remi_simple_positions(grid_steps: int = 2) -> list[int]:
+    """Return REMI Position ids that fall on the desired grid.
+
+    grid_steps=2 -> 8th-note grid (positions 0, 2, 4, ..., 14)
+    grid_steps=4 -> quarter-note grid (positions 0, 4, 8, 12)
+    grid_steps=1 -> 16th-note grid (everything; same as unconstrained)
+    """
+    return [RR.POS_BASE + p for p in range(0, RR.STEPS_PER_BAR, max(1, grid_steps))]
+
+
+def _remi_allowed_mask(prev_token: int, device,
+                       simple: bool = False,
+                       grid_steps: int = 2,
+                       allowed_durations: tuple[int, ...] = _SIMPLE_DURATIONS) -> torch.Tensor:
     """Boolean mask of token ids that are syntactically valid after `prev_token`.
 
     REMI is a strict grammar: a Position must be followed by a Pitch, a Pitch
@@ -135,17 +154,34 @@ def _remi_allowed_mask(prev_token: int, device) -> torch.Tensor:
         once enough bars have been generated.
     """
     mask = torch.zeros(RR.VOCAB_SIZE, dtype=torch.bool, device=device)
+    # In "simple" mode we restrict the rhythm vocabulary: notes start only on the
+    # 8th-note grid (positions 0, 2, ...) and durations come from a clean list
+    # (8th, dotted-8th, quarter, dotted-quarter, half, dotted-half, whole). The
+    # model still chooses pitches freely and freely chooses *which* of these
+    # rhythmic values to use — only the universe of options shrinks.
+    pos_ids = _remi_simple_positions(grid_steps) if simple else None
+    dur_ids = [RR.DUR_BASE + d - 1 for d in allowed_durations
+               if 1 <= d <= RR.MAX_DUR] if simple else None
     if prev_token == RR.BOS_ID:
         mask[RR.BAR_ID] = True
     elif prev_token == RR.BAR_ID:
-        mask[RR.POS_BASE:RR.PITCH_BASE] = True
+        if simple:
+            for p in pos_ids: mask[p] = True
+        else:
+            mask[RR.POS_BASE:RR.PITCH_BASE] = True
     elif RR.POS_BASE <= prev_token < RR.PITCH_BASE:
         mask[RR.PITCH_BASE:RR.DUR_BASE] = True
     elif RR.PITCH_BASE <= prev_token < RR.DUR_BASE:
-        mask[RR.DUR_BASE:RR.VOCAB_SIZE] = True
+        if simple:
+            for d in dur_ids: mask[d] = True
+        else:
+            mask[RR.DUR_BASE:RR.VOCAB_SIZE] = True
     elif RR.DUR_BASE <= prev_token < RR.VOCAB_SIZE:
         mask[RR.BAR_ID] = True
-        mask[RR.POS_BASE:RR.PITCH_BASE] = True
+        if simple:
+            for p in pos_ids: mask[p] = True
+        else:
+            mask[RR.POS_BASE:RR.PITCH_BASE] = True
     else:
         mask[RR.BAR_ID] = True
     # Never emit PAD / BOS / EOS during sampling — the loop injects EOS.
@@ -159,10 +195,17 @@ def _remi_allowed_mask(prev_token: int, device) -> torch.Tensor:
 def sample_remi(model: MelodyTransformerLM, n_bars: int = 32, temperature: float = 1.0,
                 top_k: int = 0, top_p: float = 0.92, pitch_repeat_penalty: float = 1.15,
                 device: str = "cpu", seed: int | None = None,
-                max_tokens: int = 4096) -> list:
+                max_tokens: int = 4096,
+                simple: bool = False, grid_steps: int = 2,
+                allowed_durations: tuple[int, ...] = _SIMPLE_DURATIONS) -> list:
     """Sample a REMI token sequence with nucleus + grammar constraints + repetition penalty.
 
-    Stops when `n_bars` Bar tokens have been emitted or EOS appears.
+    If `simple=True`, restricts the grammar to onsets on the 8th-note grid and
+    durations from a clean musical list. The model still chooses pitches freely,
+    only the rhythmic vocabulary is constrained. Useful for generating a melody
+    that a simple algorithmic accompaniment can support.
+
+    Stops when `n_bars` Bar tokens have been emitted.
     """
     if seed is not None:
         torch.manual_seed(seed)
@@ -179,8 +222,10 @@ def sample_remi(model: MelodyTransformerLM, n_bars: int = 32, temperature: float
             for pid in set(recent_pitches[-8:]):
                 if logits[pid] > 0: logits[pid] /= pitch_repeat_penalty
                 else: logits[pid] *= pitch_repeat_penalty
-        # Grammar mask.
-        allowed = _remi_allowed_mask(tokens[-1], logits.device)
+        # Grammar mask (plus rhythm restriction if simple=True).
+        allowed = _remi_allowed_mask(tokens[-1], logits.device,
+                                     simple=simple, grid_steps=grid_steps,
+                                     allowed_durations=allowed_durations)
         logits = logits.masked_fill(~allowed, float("-inf"))
         logits = logits / max(temperature, 1e-6)
         # Top-k.
